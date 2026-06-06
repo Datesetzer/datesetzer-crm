@@ -47,20 +47,19 @@ export function useRealtime(orgId: string, userId: string) {
   useEffect(() => {
     if (!orgId) return;
     const sb = supabaseBrowser();
-    ref.current?.unsubscribe();
+    if (ref.current) ref.current.unsubscribe();
 
     ref.current = sb.channel(`crm:${orgId}`)
       .on("postgres_changes", { event:"INSERT", schema:"public", table:"leads", filter:`org_id=eq.${orgId}` }, onLeadInsert)
       .on("postgres_changes", { event:"UPDATE", schema:"public", table:"leads", filter:`org_id=eq.${orgId}` }, onLeadUpdate)
-      .on("postgres_changes", { event:"*",      schema:"public", table:"tasks", filter:`org_id=eq.${orgId}` }, () => router.refresh())
+      .on("postgres_changes", { event:"*", schema:"public", table:"tasks", filter:`org_id=eq.${orgId}` }, () => router.refresh())
       .on("postgres_changes", { event:"INSERT", schema:"public", table:"notifications", filter:`org_id=eq.${orgId}` }, onNotification)
       .subscribe();
 
-    return () => ref.current?.unsubscribe();
+    return () => { if (ref.current) ref.current.unsubscribe(); };
   }, [orgId, userId, onLeadInsert, onLeadUpdate, onNotification, router]);
 }
 
-// ── PUSH NOTIFICATIONS ────────────────────────────────────
 export function usePush() {
   const [enabled, setEnabled] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -78,9 +77,10 @@ export function usePush() {
       const reg = await navigator.serviceWorker.register("/sw.js");
       await navigator.serviceWorker.ready;
 
+      const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!;
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: urlB64(process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!),
+        applicationServerKey: urlB64(vapidKey),
       });
 
       await fetch("/api/notifications/subscribe", {
@@ -106,12 +106,19 @@ export function usePush() {
   return { enabled, loading, enable };
 }
 
-function urlB64(b: string) {
+function urlB64(b: string): Uint8Array {
   const pad = "=".repeat((4 - b.length % 4) % 4);
   const base64 = (b + pad).replace(/-/g, "+").replace(/_/g, "/");
-  return Uint8Array.from([...window.atob(base64)].map(c => c.charCodeAt(0)));
+  const raw = window.atob(base64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
 }
-function ab64(buf: ArrayBuffer | null) {
+
+function ab64(buf: ArrayBuffer | null): string {
   if (!buf) return "";
-  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
 }
