@@ -3,10 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "dev": "next dev"
   },
   "dependencies": {
     "next": "14.2.5",
@@ -18,17 +17,12 @@
     "zustand": "^4.5.4",
     "zod": "^3.23.8",
     "date-fns": "^3.6.0",
-    "web-push": "^3.6.7",
-    "resend": "^3.4.0",
     "clsx": "^2.1.1"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
-    "@types/web-push": "^3.6.3",
-    "typescript": "^5.5.3",
-    "eslint": "^9.7.0",
-    "eslint-config-next": "14.2.5"
+    "typescript": "^5.5.3"
   }
 }
