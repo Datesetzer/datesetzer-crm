@@ -1,61 +1,103 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase/server";
+import { createClient } from "@supabase/supabase-js";
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-API-Key",
-};
-
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: CORS });
+function admin() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { autoRefreshToken: false, persistSession: false } }
+  );
 }
 
 export async function POST(req: NextRequest) {
-  const apiKey = req.headers.get("X-API-Key") ?? "";
-  const admin = supabaseAdmin();
+  const apiKey =
+    req.headers.get("x-api-key") ||
+    req.nextUrl.searchParams.get("key") || "";
 
-  const { data: org } = await admin.from("organizations").select("id").eq("api_key", apiKey).single();
-  if (!org) return NextResponse.json({ error: "Invalid API key" }, { status: 401, headers: CORS });
+  const sb = admin();
+
+  const { data: org } = await sb
+    .from("organizations")
+    .select("id")
+    .eq("api_key", apiKey)
+    .single();
+
+  if (!org) {
+    return NextResponse.json({ error: "Invalid API key" }, { status: 401 });
+  }
 
   const body = await req.json().catch(() => ({}));
-  const { firstName, lastName, email, phone, company, message, source, utmSource, utmMedium, utmCampaign, pageUrl, referrer } = body;
+
+  // Accept both snake_case and camelCase field names
+  const firstName = body.firstName || body.first_name || "";
+  const lastName  = body.lastName  || body.last_name  || "";
+  const email     = body.email || "";
+  const phone     = body.phone || "";
+  const source    = body.source || "WEBSITE";
+  const notes     = body.notes || "";
+  const pageUrl   = body.pageUrl || body.page_url || "";
 
   if (!firstName || !lastName) {
-    return NextResponse.json({ error: "firstName and lastName required" }, { status: 422, headers: CORS });
+    return NextResponse.json({ error: "firstName and lastName required" }, { status: 422 });
   }
 
-  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
+  // Get default pipeline stage
+  const { data: pipeline } = await sb
+    .from("pipelines")
+    .select("id")
+    .eq("org_id", org.id)
+    .eq("is_default", true)
+    .single();
 
-  // Auto score
-  let score = 30;
-  if (email)   score += 15;
-  if (phone)   score += 12;
-  if (company) score += 10;
-  if (message) score += 8;
-  score = Math.min(100, score);
+  const { data: stage } = await sb
+    .from("pipeline_stages")
+    .select("id")
+    .eq("pipeline_id", pipeline?.id ?? "")
+    .order("sort_order", { ascending: true })
+    .limit(1)
+    .single();
 
-  const { data: pipeline } = await admin.from("pipelines").select("id,stages:pipeline_stages(id,order)")
-    .eq("org_id", org.id).eq("is_default", true).single();
-  const firstStage = (pipeline?.stages as any[])?.sort((a, b) => a.order - b.order)[0];
+  const { data: lead, error } = await sb
+    .from("leads")
+    .insert({
+      org_id:     org.id,
+      first_name: firstName,
+      last_name:  lastName,
+      email,
+      phone,
+      source,
+      notes,
+      page_url:   pageUrl,
+      status:     "open",
+      score:      50,
+      stage_id:   stage?.id ?? null,
+    })
+    .select()
+    .single();
 
-  const { data: lead, error } = await admin.from("leads").insert({
-    org_id: org.id, pipeline_id: pipeline?.id, stage_id: firstStage?.id,
-    created_by_id: null, first_name: firstName, last_name: lastName,
-    email, phone, company, source: source || "WEBSITE", score, notes: message,
-    utm_source: utmSource, utm_medium: utmMedium, utm_campaign: utmCampaign,
-    page_url: pageUrl, referrer, ip_address: ip,
-  }).select().single();
-
-  if (!error && lead) {
-    await admin.from("activities").insert({
-      org_id: org.id, lead_id: lead.id, type: "LEAD_CREATED",
-      title: "Website-Lead",
-      description: `${firstName} ${lastName} hat das Formular auf ${pageUrl || "datesetzer.de"} ausgefüllt.`,
-    });
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({
-    success: true, message: "Vielen Dank! Wir melden uns in Kürze.", leadId: lead?.id,
-  }, { status: 201, headers: CORS });
+  // Notify all admins
+  const { data: profiles } = await sb
+    .from("profiles")
+    .select("id")
+    .eq("org_id", org.id)
+    .in("role", ["ADMIN", "MANAGER", "SUPER_ADMIN"]);
+
+  if (profiles?.length) {
+    await sb.from("notifications").insert(
+      profiles.map((p: any) => ({
+        org_id:     org.id,
+        profile_id: p.id,
+        type:       "NEW_LEAD",
+        title:      "Neuer Lead von der Website",
+        body:       `${firstName} ${lastName} hat sich beworben.`,
+        action_url: `/leads/${lead.id}`,
+      }))
+    );
+  }
+
+  return NextResponse.json({ ok: true, id: lead.id });
 }
